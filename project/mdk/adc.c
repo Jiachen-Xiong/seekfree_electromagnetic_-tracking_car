@@ -1,114 +1,82 @@
-#include "zf_common_headfile.h"
+#include "adc.h"
 
-#define RIGHT_REAR_X_MM    39
-#define RIGHT_REAR_Y_MM   -10
-#define RIGHT_FRONT_X_MM   48
-#define RIGHT_FRONT_Y_MM    0
-#define LEFT_FRONT_X_MM   -48
-#define LEFT_FRONT_Y_MM     0
-#define LEFT_REAR_X_MM    -39
-#define LEFT_REAR_Y_MM    -10
+adc_channel_enum adc_channels[INDUCTOR_COUNT] = {
+    RIGHT_REAR_INDUCTOR,
+    RIGHT_FRONT_INDUCTOR,
+    LEFT_FRONT_INDUCTOR,
+    LEFT_REAR_INDUCTOR
+};
 
-#define RIGHT_REAR_INDUCTOR  ADC2_CH4_P04 // 右后：(3.9, -1.0)，P0.4，IN1
-#define RIGHT_FORNT_INDUCTOR ADC2_CH2_P02 // 右前：(4.8, 0)，P0.2，IN2
-#define LEFT_FORNT_INDUCTOR  ADC2_CH0_P00 // 左前：(-4.8, 0)，P0.0，IN3
-#define LEFT_REAR_INDUCTOR   ADC2_CH3_P03 // 左后：(-3.9, -1.0)，P0.3，IN4
+uint16 adc_filtered[INDUCTOR_COUNT];
+uint16 adc_value[INDUCTOR_COUNT];
 
-#define ADC_SAMPLE_COUNT 5
-#define ADC_SAMPLE_LOSE  2
-#define ADC_NORMAL_MAX   100
+uint16 adc_cal_max[INDUCTOR_COUNT] = {
+    4095,
+    4095,
+    4095,
+    4095
+};
 
-uint16 right_rear_adc;
-uint16 right_front_adc;
-uint16 left_front_adc;
-uint16 left_rear_adc;
-
-uint16 right_rear_filtered;
-uint16 right_front_filtered;
-uint16 left_front_filtered;
-uint16 left_rear_filtered;
-
-uint16 right_rear_value;
-uint16 right_front_value;
-uint16 left_front_value;
-uint16 left_rear_value;
-
-// test
-uint16 right_rear_cal_max  = 4095;
-uint16 right_front_cal_max = 4095;
-uint16 left_front_cal_max  = 4095;
-uint16 left_rear_cal_max   = 4095;
-
-uint16 right_rear_cal_min  = 0;
-uint16 right_front_cal_min = 0;
-uint16 left_front_cal_min  = 0;
-uint16 left_rear_cal_min   = 0;
+uint16 adc_cal_min[INDUCTOR_COUNT] = {
+    0,
+    0,
+    0,
+    0
+};
 
 uint16 front_signal_threshold = 5;
-uint16 rear_signal_threshold  = 5;
+uint16 rear_signal_threshold = 5;
 
 uint16 front_error_weight = 3;
-uint16 rear_error_weight  = 1;
+uint16 rear_error_weight = 1;
 
 int16 front_error_mm;
 int16 rear_error_mm;
+int16 front_rear_delta_mm;
 
 uint16 front_signal_sum;
 uint16 rear_signal_sum;
-
-int16 front_rear_delta_mm;
-
-int16 electromagnetic_center_x_mm;
-int16 electromagnetic_center_y_mm;
 
 int16 electromagnetic_error_mm;
 
 void my_adc_init(void)
 {
-    adc_init(RIGHT_REAR_INDUCTOR,  ADC_12BIT);
-    adc_init(RIGHT_FORNT_INDUCTOR, ADC_12BIT);
-    adc_init(LEFT_REAR_INDUCTOR,   ADC_12BIT);
-    adc_init(LEFT_FORNT_INDUCTOR,  ADC_12BIT);
+    uint8 i;
+
+    for (i = 0; i < INDUCTOR_COUNT; i++) {
+        adc_init(adc_channels[i], ADC_12BIT);
+    }
+    
 }
 
 uint16 adc_trimmed_mean(adc_channel_enum channel)
 {
     uint8 i;
-    uint8 max_index;
-    uint8 min_index;
     uint32 sum;
     uint16 sample;
     uint16 max_value;
     uint16 min_value;
-
     uint16 samples[ADC_SAMPLE_COUNT];
 
-    for (i = 0; i < ADC_SAMPLE_COUNT; i++)
-    {
+    sum = 0;
+
+    for (i = 0; i < ADC_SAMPLE_COUNT; i++) {
         samples[i] = adc_convert(channel);
     }
 
-    max_index = 0;
-    min_index = 0;
     max_value = samples[0];
     min_value = samples[0];
-    sum = 0;
 
-    for (i = 0; i < ADC_SAMPLE_COUNT; i++)
-    {
+    for (i = 0; i < ADC_SAMPLE_COUNT; i++) {
         sample = samples[i];
         sum += sample;
 
-        if (sample > max_value)
-        {
+        if (sample > max_value) {
             max_value = sample;
-            max_index = i;
         }
 
-        if (sample < min_value)
-        {
+        if (sample < min_value) {
             min_value = sample;
-            min_index = i;
         }
     }
 
@@ -118,57 +86,126 @@ uint16 adc_trimmed_mean(adc_channel_enum channel)
     return (uint16)(sum / (ADC_SAMPLE_COUNT - ADC_SAMPLE_LOSE));
 }
 
-uint16 adc_normalize(uint16 raw_value, uint16 cal_max, uint16 cal_min)
+uint16 adc_normalize(uint16 raw_value, uint8 index)
 {
     uint32 result;
 
-    if (cal_max <= cal_min)
-    {
+    if (adc_cal_max[index] <= adc_cal_min[index]) {
         return 0;
     }
 
-    if (raw_value <= cal_min)
-    {
+    if (raw_value <= adc_cal_min[index]) {
         return 0;
     }
 
-    if (raw_value >= cal_max)
-    {
-        return 100;
+    if (raw_value >= adc_cal_max[index]) {
+        return ADC_NORMAL_MAX;
     }
 
-    result = (uint32)(raw_value - cal_min) * ADC_NORMAL_MAX / (cal_max - cal_min);
+    result = (uint32)(raw_value - adc_cal_min[index])
+             * ADC_NORMAL_MAX
+             / (adc_cal_max[index] - adc_cal_min[index]);
 
     return (uint16)result;
 }
 
-void my_adc_update(void)
+void adc_update(void)
 {
-    right_rear_filtered = adc_trimmed_mean(RIGHT_REAR_INDUCTOR);
-    right_front_filtered = adc_trimmed_mean(RIGHT_FORNT_INDUCTOR);
-    left_front_filtered = adc_trimmed_mean(LEFT_FORNT_INDUCTOR);
-    left_rear_filtered = adc_trimmed_mean(LEFT_REAR_INDUCTOR);
+    uint8 i;
 
-    // debug
-    right_rear_adc  = right_rear_filtered;
-    right_front_adc = right_front_filtered;
-    left_front_adc  = left_front_filtered;
-    left_rear_adc   = left_rear_filtered;
-
-    right_rear_value = adc_normalize(right_rear_filtered, right_rear_cal_max, right_rear_cal_min);
-    right_front_value = adc_normalize(right_front_filtered, right_front_cal_max, right_front_cal_min);
-    left_front_value = adc_normalize(left_front_filtered, left_front_cal_max, left_front_cal_min);
-    left_rear_value = adc_normalize(left_rear_filtered, left_rear_cal_max, left_rear_cal_min);
+    for (i = 0; i < INDUCTOR_COUNT; i++) {
+        adc_filtered[i] = adc_trimmed_mean(adc_channels[i]);
+        adc_value[i] = adc_normalize(adc_filtered[i], i);
+    }
 }
 
-// test
-void my_adc_calculate_error(void)
+int16 adc_calculate_row_error(
+    uint16 left_value,
+    uint16 right_value,
+    int16 left_x_mm,
+    int16 right_x_mm,
+    uint16 signal_threshold,
+    uint16 *signal_sum)
 {
+    int32 sum;
+    int32 numerator;
 
+    sum = (int32)left_value + right_value;
+    *signal_sum = (uint16)sum;
+
+    if (sum < signal_threshold || sum == 0) {
+        return 0;
+    }
+
+    numerator = (int32)left_value * left_x_mm
+              + (int32)right_value * right_x_mm;
+
+    return (int16)(numerator / sum);
 }
 
-void my_adc_process(void)
+void adc_calculate_front_error(void)
 {
-    my_adc_update();
-    my_adc_calculate_error();
+    front_error_mm = adc_calculate_row_error(
+        adc_value[INDUCTOR_LEFT_FRONT],
+        adc_value[INDUCTOR_RIGHT_FRONT],
+        LEFT_FRONT_X_MM,
+        RIGHT_FRONT_X_MM,
+        front_signal_threshold,
+        &front_signal_sum);
+}
+
+void adc_calculate_rear_error(void)
+{
+    rear_error_mm = adc_calculate_row_error(
+        adc_value[INDUCTOR_LEFT_REAR],
+        adc_value[INDUCTOR_RIGHT_REAR],
+        LEFT_REAR_X_MM,
+        RIGHT_REAR_X_MM,
+        rear_signal_threshold,
+        &rear_signal_sum);
+}
+
+void adc_calculate_delta(void)
+{
+    if ((front_signal_sum >= front_signal_threshold)
+        && (rear_signal_sum >= rear_signal_threshold)) {
+        front_rear_delta_mm = front_error_mm - rear_error_mm;
+    } else {
+        front_rear_delta_mm = 0;
+    }
+}
+
+void adc_calculate_fusion(void)
+{
+    int32 total_weight = 0;
+    int32 weighted_error = 0;
+
+    if ((front_signal_sum >= front_signal_threshold)
+        && (front_error_weight > 0)) {
+        weighted_error += (int32)front_error_mm * front_error_weight;
+        total_weight += front_error_weight;
+    }
+
+    if ((rear_signal_sum >= rear_signal_threshold)
+        && (rear_error_weight > 0)) {
+        weighted_error += (int32)rear_error_mm * rear_error_weight;
+        total_weight += rear_error_weight;
+    }
+
+    if (total_weight > 0) {
+        electromagnetic_error_mm = (int16)(weighted_error / total_weight);
+    } else {
+        electromagnetic_error_mm = 0;
+    }
+}
+
+void adc_process(void)
+{
+    adc_update();
+
+    adc_calculate_front_error();
+    adc_calculate_rear_error();
+
+    adc_calculate_delta();
+    adc_calculate_fusion();
 }
